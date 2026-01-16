@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtualenv
+.venv/
+
+# Local data and DB
+wip_analysis/data/input/
+wip_analysis/data/local.db
+wip_analysis/data/user_config.json
+*.db
+
+# Logs
+*.log
+
+# OS
+.DS_Store

@@ -1,5 +1,4 @@
 import json
-from datetime import datetime
 
 import pandas as pd
 import streamlit as st
@@ -41,18 +40,25 @@ def quote_ident(name):
     return '"' + name.replace('"', '""') + '"'
 
 
-def fetch_df(table_name, limit=500):
+def fetch_df(table_name, limit=None):
     with get_connection() as conn:
         try:
-            query = f"SELECT * FROM {quote_ident(table_name)} LIMIT {int(limit)}"
+            if limit is None:
+                query = f"SELECT * FROM {quote_ident(table_name)}"
+            else:
+                query = f"SELECT * FROM {quote_ident(table_name)} LIMIT {int(limit)}"
             return pd.read_sql_query(query, conn)
         except Exception:
             return pd.DataFrame()
 
 
-def fetch_import_history(limit=200):
+def fetch_import_history(limit=None):
     with get_connection() as conn:
         try:
+            if limit is None:
+                return pd.read_sql_query(
+                    "SELECT * FROM import_history ORDER BY id DESC", conn
+                )
             return pd.read_sql_query(
                 "SELECT * FROM import_history ORDER BY id DESC LIMIT ?", conn, params=(limit,)
             )
@@ -60,28 +66,26 @@ def fetch_import_history(limit=200):
             return pd.DataFrame()
 
 
-def insert_manual_input(payload):
+def list_tables():
     with get_connection() as conn:
-        conn.execute(
-            '''
-            INSERT INTO manual_input (
-                serialnumber, input_date, site, input_type, quantity, note,
-                created_by, created_at, source
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''',
-            (
-                payload.get("serialnumber"),
-                payload.get("input_date"),
-                payload.get("site"),
-                payload.get("input_type"),
-                payload.get("quantity"),
-                payload.get("note"),
-                payload.get("created_by"),
-                payload.get("created_at"),
-                payload.get("source"),
-            ),
-        )
-        conn.commit()
+        try:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+            ).fetchall()
+            return [row[0] for row in rows]
+        except Exception:
+            return []
+
+
+def filter_df(df, column, text):
+    if df.empty or not text:
+        return df
+    if column and column in df.columns:
+        return df[df[column].astype(str).str.contains(text, case=False, na=False)]
+    mask = df.astype(str).apply(
+        lambda row: row.str.contains(text, case=False, na=False).any(), axis=1
+    )
+    return df[mask]
 
 
 st.set_page_config(page_title="WIP Analysis MVP", layout="wide")
@@ -121,111 +125,37 @@ with load_col:
         else:
             st.sidebar.error(t("label.no_data"))
 
-row_limit = st.sidebar.number_input(t("label.row_limit"), min_value=50, max_value=5000, value=500, step=50)
-
-(tab_overview,
- tab_raw_sheet1,
- tab_raw_wip_list,
- tab_raw_complete,
- tab_raw_shipping,
- tab_manual,
- tab_extend_sheet4,
- tab_extend_wip,
- tab_extend_vs_ship,
- tab_extend_build,
- tab_settings,
- tab_import_log) = st.tabs([
-    t("tab.overview"),
-    t("tab.raw_sheet1"),
-    t("tab.raw_wip_list"),
-    t("tab.raw_complete_count"),
-    t("tab.raw_shipping_plan"),
-    t("tab.manual_input"),
-    t("tab.extend_sheet4"),
-    t("tab.extend_wip_summary"),
-    t("tab.extend_vs_ship"),
-    t("tab.extend_build_plan"),
-    t("tab.settings"),
-    t("tab.import_log"),
-])
+(tab_overview, tab_query, tab_import_log) = st.tabs(
+    [t("tab.overview"), t("tab.query"), t("tab.import_log")]
+)
 
 with tab_overview:
     st.subheader(t("overview.last_import"))
-    hist = fetch_import_history(limit=20)
+    hist = fetch_import_history()
     st.dataframe(hist, use_container_width=True)
+    table_names = list_tables()
+    if table_names:
+        st.subheader("Tables")
+        st.write(table_names)
 
-with tab_raw_sheet1:
-    df = fetch_df("raw_sheet1", row_limit)
-    st.dataframe(df, use_container_width=True)
-
-with tab_raw_wip_list:
-    df = fetch_df("raw_wip_list", row_limit)
-    st.dataframe(df, use_container_width=True)
-
-with tab_raw_complete:
-    df = fetch_df("raw_completion_count", row_limit)
-    st.dataframe(df, use_container_width=True)
-
-with tab_raw_shipping:
-    df = fetch_df("raw_shipping_plan", row_limit)
-    st.dataframe(df, use_container_width=True)
-
-with tab_manual:
-    st.subheader(t("manual.form.title"))
-    with st.form("manual_input_form"):
-        serialnumber = st.text_input(t("manual.form.serialnumber"))
-        input_date = st.date_input(t("manual.form.date"))
-        site = st.text_input(t("manual.form.site"))
-        input_type = st.text_input(t("manual.form.type"))
-        quantity = st.number_input(t("manual.form.quantity"), value=0.0, step=1.0)
-        note = st.text_input(t("manual.form.note"))
-        created_by = st.text_input(t("manual.form.user"))
-        submitted = st.form_submit_button(t("manual.form.submit"))
-        if submitted:
-            payload = {
-                "serialnumber": serialnumber,
-                "input_date": input_date.isoformat(),
-                "site": site,
-                "input_type": input_type,
-                "quantity": quantity,
-                "note": note,
-                "created_by": created_by,
-                "created_at": datetime.utcnow().isoformat(),
-                "source": "ui",
-            }
-            insert_manual_input(payload)
-            st.success(t("manual.form.success"))
-
-    st.subheader("Manual: Excel Import")
-    df_excel = fetch_df("manual_completion_after_0000", row_limit)
-    st.dataframe(df_excel, use_container_width=True)
-
-    st.subheader("Manual: UI Input")
-    df_ui = fetch_df("manual_input", row_limit)
-    st.dataframe(df_ui, use_container_width=True)
-
-with tab_extend_sheet4:
-    df = fetch_df("extend_sheet4", row_limit)
-    st.dataframe(df, use_container_width=True)
-
-with tab_extend_wip:
-    df = fetch_df("extend_wip_summary", row_limit)
-    st.dataframe(df, use_container_width=True)
-
-with tab_extend_vs_ship:
-    df = fetch_df("extend_vs_ship", row_limit)
-    st.dataframe(df, use_container_width=True)
-
-with tab_extend_build:
-    df = fetch_df("extend_build_plan", row_limit)
-    st.dataframe(df, use_container_width=True)
-
-with tab_settings:
-    st.subheader("Serialnumber Rules")
-    st.json(settings.SERIALNUMBER_RULES)
-    st.subheader("Column Maps")
-    st.json(settings.COLUMN_MAPS)
+with tab_query:
+    st.subheader(t("query.title"))
+    table_options = list_tables()
+    if not table_options:
+        st.info(t("query.no_tables"))
+    else:
+        selected_table = st.selectbox(t("query.table"), table_options)
+        df = fetch_df(selected_table)
+        if df.empty:
+            st.info(t("query.no_data"))
+        else:
+            columns = [t("query.all_columns")] + list(df.columns)
+            selected_column = st.selectbox(t("query.column"), columns)
+            query_text = st.text_input(t("query.text"))
+            col = None if selected_column == t("query.all_columns") else selected_column
+            filtered = filter_df(df, col, query_text)
+            st.dataframe(filtered, use_container_width=True)
 
 with tab_import_log:
-    hist = fetch_import_history(limit=200)
+    hist = fetch_import_history()
     st.dataframe(hist, use_container_width=True)
